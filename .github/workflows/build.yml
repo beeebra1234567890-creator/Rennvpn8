@@ -1,5 +1,5 @@
 
-name: Build RENT VPN APK
+name: Build APK
 
 on:
   push:
@@ -14,17 +14,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-      - name: Locate project
+      - name: Locate Android project
         shell: bash
         run: |
-          mkdir -p project
+          mkdir -p _source
 
           ZIP_FILE=$(find . -maxdepth 1 -type f -iname '*.zip' | head -n 1)
 
           if [ -n "$ZIP_FILE" ]; then
-            unzip -oq "$ZIP_FILE" -d project
+            echo "Extracting source ZIP..."
+            unzip -oq "$ZIP_FILE" -d _source
           fi
 
           PROJECT_FILE=$(find . -type f \
@@ -44,7 +46,7 @@ jobs:
           fi
 
           echo "PROJ=$DIR" >> "$GITHUB_ENV"
-          echo "Project dir: $DIR"
+          echo "Project directory: $DIR"
           ls -la "$DIR"
 
       - name: Install Java
@@ -77,16 +79,15 @@ jobs:
             -D app/libs \
             --clobber
 
-          if [ ! -f app/libs/libv2ray.aar ]; then
-            FOUND=$(find app/libs -maxdepth 1 \
-              -type f -name '*.aar' | head -n 1)
+          FOUND=$(find app/libs -maxdepth 1 \
+            -type f -name '*.aar' \
+            ! -name 'libv2ray.aar' | head -n 1)
 
-            if [ -n "$FOUND" ]; then
-              mv "$FOUND" app/libs/libv2ray.aar
-            fi
+          if [ -n "$FOUND" ]; then
+            mv "$FOUND" app/libs/libv2ray.aar
           fi
 
-          if [ ! -f app/libs/libv2ray.aar ]; then
+          if [ ! -s app/libs/libv2ray.aar ]; then
             echo "ERROR: libv2ray.aar not found"
             exit 1
           fi
@@ -100,10 +101,28 @@ jobs:
             --no-daemon \
             --stacktrace
 
+      - name: Verify APK
+        working-directory: ${{ env.PROJ }}
+        run: |
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -s "$APK" ]; then
+            echo "ERROR: APK not found"
+            exit 1
+          fi
+
+          echo "Checking APK..."
+          unzip -t "$APK"
+
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" \
+            verify --verbose "$APK"
+
+          ls -lh "$APK"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: RENT-VPN-debug-apk
+          name: APK
           path: ${{ env.PROJ }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
