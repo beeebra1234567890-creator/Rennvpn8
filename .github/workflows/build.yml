@@ -1,45 +1,88 @@
 
-name: Unpack VPN source
+name: Build RENT VPN APK
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - '*.zip'
+    branches: [main, master]
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  unpack:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download repository
+      - name: Get source code
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
 
-      - name: Extract ZIP
+      - name: Extract ZIP if needed
         run: |
-          ZIP=$(find . -maxdepth 1 -iname "*.zip" -type f | head -n 1)
+          mkdir -p _source_unpack
+          find . -maxdepth 2 -type f -iname "*.zip" \
+            -not -path "./_source_unpack/*" | while read zip; do
+              unzip -o "$zip" -d _source_unpack
+          done
 
-          if [ -z "$ZIP" ]; then
-            echo "ZIP archive not found"
+      - name: Find Android project
+        run: |
+          PROJECT_FILE=$(find . -type f \
+            -path "*/app/build.gradle.kts" \
+            -not -path "*/build/*" | head -n 1)
+
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "Android project not found"
             exit 1
           fi
 
-          mkdir -p extracted
-          unzip -o "$ZIP" -d extracted
+          PROJECT_DIR=$(dirname "$(dirname "$PROJECT_FILE")")
+          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+          echo "Found project: $PROJECT_DIR"
 
-      - name: Save extracted files
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Download Xray library
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          cp -a extracted/. .
-          rm -rf extracted
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .
-          git commit -m "Automatically unpack VPN source" || echo "No changes"
-          git push
+          mkdir -p "$PROJECT_DIR/app/libs"
+          gh release download \
+            -R 2dust/AndroidLibXrayLite \
+            -p '*.aar' \
+            -D "$PROJECT_DIR/app/libs" \
+            --clobber
+
+          for f in "$PROJECT_DIR"/app/libs/*.aar; do
+            if [ -f "$f" ] && [ "$(basename "$f")" != "libv2ray.aar" ]; then
+              mv "$f" "$PROJECT_DIR/app/libs/libv2ray.aar"
+              break
+            fi
+          done
+
+          ls -lh "$PROJECT_DIR/app/libs"
+
+      - name: Build APK
+        run: |
+          gradle -p "$PROJECT_DIR" :app:assembleDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: RENT-VPN-APK
+          path: "**/app/build/outputs/apk/debug/*.apk"
+          if-no-files-found: error
+          retention-days: 14
           
