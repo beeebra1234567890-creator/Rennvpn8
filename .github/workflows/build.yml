@@ -14,75 +14,97 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Get source code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Extract ZIP if needed
+      - name: Locate project
+        shell: bash
         run: |
-          mkdir -p _source_unpack
-          find . -maxdepth 2 -type f -iname "*.zip" \
-            -not -path "./_source_unpack/*" | while read zip; do
-              unzip -o "$zip" -d _source_unpack
-          done
+          mkdir -p project
 
-      - name: Find Android project
-        run: |
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname '*.zip' | head -n 1)
+
+          if [ -n "$ZIP_FILE" ]; then
+            unzip -oq "$ZIP_FILE" -d project
+          fi
+
           PROJECT_FILE=$(find . -type f \
-            -path "*/app/build.gradle.kts" \
-            -not -path "*/build/*" | head -n 1)
+            -path '*/app/build.gradle.kts' \
+            -not -path '*/build/*' | head -n 1)
 
           if [ -z "$PROJECT_FILE" ]; then
-            echo "Android project not found"
+            echo "ERROR: Android project not found"
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$(dirname "$PROJECT_FILE")")
-          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
-          echo "Found project: $PROJECT_DIR"
+          DIR=$(dirname "$(dirname "$PROJECT_FILE")")
+
+          if [ ! -f "$DIR/settings.gradle.kts" ]; then
+            echo "ERROR: settings.gradle.kts not found"
+            exit 1
+          fi
+
+          echo "PROJ=$DIR" >> "$GITHUB_ENV"
+          echo "Project dir: $DIR"
+          ls -la "$DIR"
 
       - name: Install Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: '17'
 
       - name: Install Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 8.9
+          gradle-version: '8.9'
 
-      - name: Download Xray library
+      - name: Download libv2ray.aar
+        working-directory: ${{ env.PROJ }}
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          mkdir -p "$PROJECT_DIR/app/libs"
+          mkdir -p app/libs
+
           gh release download \
             -R 2dust/AndroidLibXrayLite \
             -p '*.aar' \
-            -D "$PROJECT_DIR/app/libs" \
+            -D app/libs \
             --clobber
 
-          for f in "$PROJECT_DIR"/app/libs/*.aar; do
-            if [ -f "$f" ] && [ "$(basename "$f")" != "libv2ray.aar" ]; then
-              mv "$f" "$PROJECT_DIR/app/libs/libv2ray.aar"
-              break
+          if [ ! -f app/libs/libv2ray.aar ]; then
+            FOUND=$(find app/libs -maxdepth 1 \
+              -type f -name '*.aar' | head -n 1)
+
+            if [ -n "$FOUND" ]; then
+              mv "$FOUND" app/libs/libv2ray.aar
             fi
-          done
+          fi
 
-          ls -lh "$PROJECT_DIR/app/libs"
+          if [ ! -f app/libs/libv2ray.aar ]; then
+            echo "ERROR: libv2ray.aar not found"
+            exit 1
+          fi
 
-      - name: Build APK
+          ls -lh app/libs
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJ }}
         run: |
-          gradle -p "$PROJECT_DIR" :app:assembleDebug --stacktrace
+          gradle :app:assembleDebug \
+            --no-daemon \
+            --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: RENT-VPN-APK
-          path: "**/app/build/outputs/apk/debug/*.apk"
+          name: RENT-VPN-debug-apk
+          path: ${{ env.PROJ }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
           
